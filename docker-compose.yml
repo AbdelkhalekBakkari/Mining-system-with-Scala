@@ -1,0 +1,94 @@
+# Servers Overview relies upon.
+#
+# Usage: `docker-compose start` to create a dev/test environment.
+
+version: "3"
+
+volumes:
+  database-data:
+  search-data:
+  blob-storage-data:
+  homedir:
+
+services:
+  redis:
+    build: ./docker/overview-redis
+
+  database:
+    build: ./docker/overview-database
+    volumes:
+      - database-data:/var/lib/postgresql/data
+
+  dev:
+    build: ./docker/overview-dev
+    stdin_open: true
+    depends_on: [ redis, database ]
+    networks:
+      default:
+        aliases:
+          - overview-web # so integration tests can see it
+          - overview-worker # so converters can see it
+    volumes:
+      - search-data:/var/lib/overview/search
+      - blob-storage-data:/var/lib/overview/blob-storage
+      - homedir:/root # sbt's and npm's caches
+      #- .:/app:ro
+      - .:/app # we can't go "ro" because Webpack writes to the source directory for now
+    ports:
+      - '127.0.0.1:3333:3333' # port 3333 is useful when running integration-test/mock-plugins/standalone
+      - '127.0.0.1:9032:9032' # port 9032 is useful when developing converters
+      - '127.0.0.1:9000:80'
+
+  convert-archive:
+    image: "${CONVERT_ARCHIVE_IMAGE}"
+    depends_on: [ 'dev' ]
+    environment:
+      POLL_URL: 'http://overview-worker:9032/Archive'
+
+  convert-email:
+    image: "${CONVERT_EMAIL_IMAGE}"
+    depends_on: [ 'dev' ]
+    environment:
+      POLL_URL: 'http://overview-worker:9032/Email'
+
+  convert-html:
+    image: "${CONVERT_HTML_IMAGE}"
+    depends_on: [ 'dev' ]
+    environment:
+      POLL_URL: 'http://overview-worker:9032/Html'
+
+  convert-image:
+    image: "${CONVERT_IMAGE_IMAGE}"
+    depends_on: [ 'dev' ]
+    environment:
+      POLL_URL: 'http://overview-worker:9032/Image'
+
+  convert-office:
+    image: "${CONVERT_OFFICE_IMAGE}"
+    depends_on: [ 'dev' ]
+    environment:
+      POLL_URL: 'http://overview-worker:9032/Office'
+
+  convert-pdf:
+    image: "${CONVERT_PDF_IMAGE}"
+    depends_on: [ 'dev' ]
+    environment:
+      POLL_URL: 'http://overview-worker:9032/Pdf'
+
+  convert-pdfocr:
+    image: "${CONVERT_PDFOCR_IMAGE}"
+    depends_on: [ 'dev' ]
+    environment:
+      POLL_URL: 'http://overview-worker:9032/PdfOcr'
+
+  convert-pst:
+    image: "${CONVERT_PST_IMAGE}"
+    depends_on: [ 'dev' ]
+    environment:
+      POLL_URL: 'http://overview-worker:9032/Pst'
+
+  convert-text:
+    image: "${CONVERT_TEXT_IMAGE}"
+    depends_on: [ 'dev' ]
+    environment:
+      POLL_URL: 'http://overview-worker:9032/Text'

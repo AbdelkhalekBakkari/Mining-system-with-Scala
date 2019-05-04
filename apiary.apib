@@ -1,0 +1,660 @@
+FORMAT: 1A
+HOST: https://www.overviewdocs.com/api/v1
+
+# Overview
+
+The Overview API lets you manipulate document sets and related objects from
+https://www.overviewdocs.com.
+
+## Authentication
+
+You'll need two special pieces of information to access all endpoints:
+
+* Your **Document Set ID**. This points to a set of documents.
+* Your **API Token**. This is your identity and a password.
+
+Got all that? Great. Now, for every request, add an `Authorization` header of `Basic {base64Encode(apiToken + ":x-auth-token")}`.
+
+## API Tokens
+
+To access the API, your program needs an **API Token**. That token allows a script to behave like the user who created it, granting permissions on one document set. Keep it secret: anybody who can figure out the token has full read/write access to that document set.
+
+If you're serving a custom View, Overview will automatically create an API token and pass it to your Plugin.
+
+If you're creating a standalone program, though, you'll need to create your own token.
+
+While we work out the kinks, Overview's API is **experimental**. You'll have to edit URLs by hand to generate API tokens.
+
+### Generating an API token for a Document Set
+
+1. Browse to a Document Set.
+2. Add "/api-tokens" to the URL. The URL should look like `http://www.overviewdocs.com/documentsets/123/api-tokens`.
+3. Type in your app name and generate a token.
+
+Now you can test your token. On a command-line:
+
+`curl -u 'MYTOKEN:x-auth-token' http://www.overviewdocs.com/api/v1/document-sets/123/tags`
+
+This API endpoint will list all the tags on the Document Set.
+
+### Generating an API token that can create new Document Sets
+
+1. Browse to http://www.overviewdocs.com/api-tokens.
+2. Type in your app name and generate a token.
+
+You can use this token to create new document sets for yourself. See the section on [Files](#reference/files) for details.
+
+### Avoiding CSRF Protection
+
+These API requests can be made with a regular web browser, from any web page on the Internet -- including evil web pages. Overview has Cross-Site Request Forgery (CSRF) protection to make sure evil web pages can't use the credentials you give Overview when you log in. CSRF protection might cause you a `403 Unauthorized` response ... unless you prove you aren't an HTTP `<form>`.
+
+Add a special request header, `X-Requested-With`, to your HTTP request. It can be anything: for instance, `X-Requested-With: My Great Overview Plugin`
+
+Most of the time, other headers (such as `Content-Type: application/json`) will implicitly prove you aren't an HTTP `<form>`. But some requests -- like `POST /files/:guid` -- need `X-Requested-With`.
+
+## Rules of API requests
+
+* Requests and responses are always in [JSON](http://json.org).
+* All requests must be authorized. That means they must have an `Authorization` header of `Basic #{base64encode("MYTOKEN:x-auth-token")}`.
+* `GET` and `HEAD` requests won't modify the document set. `POST`, `PUT`, `PATCH` and `DELETE` requests will.
+
+## Limits
+
+By default, you may not POST a request larger than 100 kilobytes. Should you receive a `413 Entity Too Large` HTTP error, please contact us and specify the endpoints you need: we'll up the limit.
+
+## HTTPS
+
+We do not support HTTP. Use nothing but HTTPS.
+
+## Pagination
+
+Some API requests will yield "paginated" results, meaning you're not allowed to fetch everything at once.
+
+You can add `offset` and `limit` parameters to the query string to specify which records you'd like. (Overview will impose a maximum limit.)
+
+Overview will return a JavaScript object that looks like this:
+
+    {
+        "pagination": {
+            "offset": 150,
+            "limit": 50,
+            "total": 234
+        },
+        "items": [
+            ...
+        ]
+    }
+
+Here's what it means.
+
+Let's say Overview is holding 234 (`total`) documents. You've requested a maximum (`limit`) of 50 documents per request.
+Overview is picturing all 234 documents, sorted according to some criteria, but it is only giving you documents 150 (`offset`) to 200 (`offset + limit`).
+If you want to read more documents, you'll have to make another request -- for instance, one with `?offset=200&limit=50` in the query string.
+
+## Base64 BitSet
+
+One parameter of Overview's `/api/v1/document-sets/:id/documents` needs a bit of explaining: `documentIdsBitSetBase64`.
+It's useful when you already _know_ the IDs of the documents you want to search.
+
+This compression format lets you specify any combination of documents using exactly the same amount of
+space. The amount of space only depends on the size of your document set. Specifying `documentIdsBitSetBase64` in a
+6,000-document document set will cost 1kb -- whether you're selecting 12 or 4,000 documents.
+
+Document IDs in Overview are 64-bit numbers. (They're small enough that JavaScript's `Number` class stores
+them safely, too.) The most-significant 32 bits are always the same: they're the Document Set ID. The
+least-significant 32 bits are sequential integers: the first document you upload has id `0`, the second has id `1`,
+and so on.
+
+You can store a selection of document IDs in a [BitSet](https://en.wikipedia.org/wiki/Bit_array).
+Conceptually, a bitset is a long string of memory in which the first bit corresponds to document 0, the second bit corresponds to
+document 1, and so on. Each bit can either be `1` ("on", meaning, "include this document in the selection") or `0` ("off").
+Encode your bitset as [Base64](https://en.wikipedia.org/wiki/Base64) and pass it as `documentIdsBitSetBase64`.
+
+There are probably thousands of bitset libraries in your programming language. Use whichever
+you like, or build your bitset from scratch. Most bitset libraries do the same things, so you'll have one of two options
+for converting your bitset to Base64:
+
+* If your bitset library has a method that converts to bytes, like Rust's [BitVec::to_bytes](http://contain-rs.github.io/bit-vec/bit_vec/struct.BitVec.html), use that. Then convert those bytes to Base64 using any Base64-encoding library.
+* Many bitset libraries don't output simple bytes. More confusingly, most bitset libraries actually store bitsets as "words" with bits placed _backwards_ within the word. One example is [Java's BitSet](https://docs.oracle.com/javase/9/docs/api/java/util/BitSet.html#toByteArray--). With those libraries, you'll need to copy the bitset's array (for instance, use Java's [BitSet.toLongArray()](https://docs.oracle.com/javase/9/docs/api/java/util/BitSet.html#toLongArray--), _reverse_ the bits each element (in Java, [Long.reverse](https://docs.oracle.com/javase/9/docs/api/java/lang/Long.html#reverse-long-)), convert to bytes, and Base64-encode the bytes.
+
+In short, the first bit of the bytes you pass Overview must refer to document 0.
+
+Test your encoding approach: To select just document 0, `documentIdsBitSetBase64` should be either `oA` or `oA==`. (That's encoded from the byte, `0x80`)
+
+One last space-saving measure: where standard Base64 uses `+` and `/`, you may use `-` and `_`. That saves you from needing to URL-encode your `documentIdsBitSetBase64`, which makes a smaller GET request.
+
+# Group Api Token
+
+Your **ApiToken** holds data about what you can access. You send the token
+implicitly with every request (see above); here, you can read extra information
+about the token from Overview.
+
+## ApiToken [/api-token]
+
+A singleton JSON object associated with your API key.
+
++ Model (application/json)
+
+        {
+          "token": "abcde12345",
+          "description": "created by SomethingOrOther",
+          "userEmail": "mary@example.com",
+          "createdAt": "2017-11-28T19:31:12.000Z",
+          "documentSetId": 12345
+        }
+
+### Retrieve your ApiToken [GET]
++ Response 200
+
+    [ApiToken][]
+    
+# Group Document Sets
+A **Document Set** is a collection of documents.
+
+## Document Sets Collection
+
+### Create a DocumentSet [POST]
+You need only provide a JSON Object with a `title` property to create an empty DocumentSet.
+
+The method will return the `documentSet` properties along with an `apiToken` you can use to add documents.
+
++ Parameters
+    + title (required,string,`"my documents"`) ... The title of the document set.
+    + metadataSchema (optional,object) ... The format of metadata you will receive when listing documents. If unset, all document metadata appear to be empty. (You can set this later.)
+
++ Request (application/json)
+
+        {
+            "title": "My fresh new document set",
+            "metadataSchema": {
+                "version": 1,
+                "fields": [
+                    { "name": "foo", "type": "String" },
+                    { "name": "bar", "type": "String" }
+                ]
+            }
+        }
+
++ Response 201 (application/json)
+
+        {
+            "documentSet": {
+                "id": 123,
+                "title": "My fresh new document set",
+                "metadataSchema": {
+                    "version": 1,
+                    "fields": [
+                        { "name": "foo", "type": "String" },
+                        { "name": "bar", "type": "String" }
+                    ]
+                }
+            },
+            "apiToken": {
+                "token": "a-fresh-token-for-docset-123"
+            }
+        }
+
+# Group Files
+
+A **File** is something you upload to Overview. It will generate one or many *Documents*.
+
+The file-upload API is complicated: Overview supports resuming huge uploads, but typical HTTP clients don't. This API documentation focuses on the simple bits. We provide a standalone Node client called [script-add-files](https://github.com/overview/script-add-files) and a JavaScript client library, [MassUpload](https://github.com/overview/js-mass-upload). Refer to those should you wish to develop a new client.
+
+The file-upload sequence looks like this:
+
+1. Upload a bunch of files, which will be attached to a singleton "file group" your API token grants access to
+2. POST `/files/finish`
+
+Your API token grants you access to a singleton collection of files. Some of these are fully-uploaded; others are only partially-uploaded. As soon as you `DELETE` or `finish` your upload, all files will disappear. You can then begin uploading anew.
+
+## File [/files/{guid}]
+
+A File is an in-progress or completed file upload. It lasts until the file collection is `finish`ed or `DELETE`d.
+
+`loaded` indicates the number of bytes that have been uploaded. `total` indicates the total file size. When `loaded = total`, the file upload is complete.
+
++ Parameters
+    + guid (required, uuid, `bb7b0620-2e9c-4bf3-b283-45387e7b3d72`) ... The *File* GUID. The client must generate this: for a given file group, each File must have a unique GUID. These IDs help the client and server synchronize.
+
++ Model (application/json)
+
+        {
+            "guid": "bb7b0620-2e9c-4bf3-b283-45387e7b3d72",
+            "name": "filename.pdf",
+            "total": 10240,
+            "loaded": 10240
+        }
+
+### Show File Metadata [HEAD]
+There is no API endpoint for reading the file: Overview assumes the client knows the file contents already. (The `guid` can help look that up.)
+
+There is an API endpoint for finding out _progress_ of a file upload.
+
+Expect the following responses:
+
+* `404 Not Found`: No upload has ever begun for a file with this `guid`.
+* `204 No Content`: There is an empty file with the given `guid`. If this is an empty file (the client should know this, based on the `guid`), then this upload is completed.
+* `206 Partial Content`: The file is partially uploaded. The `Content-Range` header will indicate which bytes have been uploaded: for instance, `Content-Range: bytes 0-499/1234` means *500* bytes have been uploaded, and the client can resume at byte *500*. No, not *499*: the [Content-Range specification](http://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.16) is clear about this off-by-one weirdness.
+* `200 OK`: The file is fully uploaded. The `Content-Length` header will indicate how large the file is; the client should already know the content length, though.
+
+For all but `404 Not Found`, the filename is in the `Content-Disposition` header and the file type is in the `Content-Type` header.
+
++ Response 200
+
+### Upload File [POST]
+(Astute readers will lament that this should be sometimes `PUT` and sometimes `PATCH`. Programmers will be glad we didn't add that distinction.)
+
+Upload a file by `POST`ing binary data to this endpoint. The `guid` must be unique with respect to other files in the same file group; and the client must be able to determine which file in the local system belongs to that GUID. (A hash of a filename or filename+timestamp is a good GUID.)
+
+Be sure to set the following headers:
+
+* `Content-Disposition`: Includes the filename. See the [Content-Disposition specification](http://www.w3.org/Protocols/rfc2616/rfc2616-sec19.html#sec19.5.1) for details. This cannot be changed after the first upload attempt.
+* `Content-Type`: Includes the file's MIME type. See the [Content-Type specification](http://www.w3.org/Protocols/rfc1341/4_Content-Type.html) for details. Overview stores this but does not read it; `application/octet-stream` should be fine. This cannot be changed after the first upload attempt.
+* `Content-Length` (to upload from scratch): File size. This cannot be changed after the first upload attempt.
+* `Content-Range` (to resume an upload): Bytes in this request. For instance: `Content-Range: bytes 10-1233/1234` will skip the first 10 bytes and go to the end of the file. Yes, that off-by-one is weird; that's described in the [Content-Range specification](http://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.16)
+* `Overview-Document-Metadata-JSON` (optional): Metadata JSON Object, _ASCII-encoded_. The document (or documents) created by this File will have the given metadata JSON. Set `metadataSchema` on the DocumentSet to see the metadata when listing documents.
+
+As the `Content-Range` makes clear, Overview supports resuming interrupted uploads. If Overview tells you that `loaded = 10240`, then you can set `Content-Range: bytes 10240-xxxxx/yyyyy` and seek the file to the `10240`th byte to resume upload at byte `10240`. Beware off-by-one error, and definitely test this feature if you are writing your own client.
+
++ Response 201
+
+## Files Collection [/files]
+
+### List Files [GET]
+This shows in-progress and completed File uploads.
+
++ Response 200 (application/json)
+
+        [
+            {
+                "guid": "a31dbc0a-e9e8-4ea9-99db-7c2755fed526",
+                "name": "filename.txt",
+                "total": 10240,
+                "loaded": 10240
+            }, {
+                "guid": "db8c94df-1afb-4f9e-af74-5281a93f0f22",
+                "name": "incomplete-file.doc",
+                "total": 100000,
+                "loaded": 91000
+            }
+        ]
+
+### Delete files [DELETE]
+This deletes all uploaded files. After this, you can upload new files from scratch.
+
++ Response 204
+
+## Finish uploading files [/files/finish]
+
+
+### Add files to document set [POST]
+
+You can authenticate with either Document Set-specific API token or a Document-Set Creation API Token. See the section on [API Tokens](#introduction/api-tokens) for more details.
+
+The body is json. Only `lang` is required. 
+
+* `ocr` is `true` by default, meaning when a page has no text we will run Tesseract to extract text from images. If `false`, processing will be faster.
+* `lang` is the two-letter langauge code that will be applied to all new documents. Required. 
+* `split_documents` is `false` by default, meaning each File becomes a Document. If `true`, each File will be split by page boundaries, and each Page will become a Document. (Files that don't have pages, such as `.txt` files, will never be split.)
+* `metadata_json` is a String representation of a JavaScript Object that will be added to every document. Be sure to set `metadataSchema` on the DocumentSet so you can read the values. `metadata_json` will be ignored for every file you uploaded with `Overview-Document-Metadata-JSON`.
+
++ Request (application/json)
+
+        {
+            "ocr": true,
+            "lang": "en",
+            "split_documents": false,
+            "metadata_json": "{\"foo\":\"bar\"}"
+        }
+
++ Response 201
+
+## Check if file already uploaded [/document-sets/files/{sha1}]
+
+### Check if file already uploaded [HEAD]
+
+This tests whether a file with the specified sha1 40-byte hex string has previously been added to the document set connected to the API token. Files are only processed and added to a document set after /files/finish, so this cannot be used to test for unprocessed files. Returns status 204 if the file already exists, 404 otherwise.
+
++ Response 204
+
+# Group Tags
+A **Tag** is a label that can apply to documents.
+
+## Tags Collection [/document-sets/{documentSetId}/tags]
+
++ Parameters
+    + documentSetId (number,required,`1`) ... The DocumentSet ID.
+
+### List all Tags [GET]
++ Response 200 (application/json)
+
+        [{
+          "id": 1, "name": "foo", "color": "#abcdef"
+        }, {
+          "id": 2, "name": "bar", "color": "#123456"
+        }]
+
+# Group Documents
+A **Document** is a unit of text. It may represent anything: a tweet, a Word file, an Excel spreadsheet, a PDF, an email, a page of text, or whatever your imagination can bring.
+
+A Document's `text` is its essence, but other data which comes in handy.
+
+## Document [/document-sets/{documentSetId}/documents/{id}]
+A single Document object, with all metadata and text.
+
+The Document resource has the following attributes:
+
+- id: Overview's way of identifying the document
+- url: where to find the document on the Web (or your intranet)
+- suppliedId: a String you use to identify the document when you aren't using Overview
+- title: what to call the document in Overview's document list
+- page: if this document represents one page, the page number; `null` otherwise
+- metadata: An Object containing extra-field values keyed by field name
+- tokens: A space-separated String listing every token in the document, according to [ElasticSearch's Standard Tokenizer](https://www.elastic.co/guide/en/elasticsearch/reference/current/analysis-standard-tokenizer.html)
+- text: The text of the document
+- isFromOcr: `true` when Overview generated the text with an Optical Character Recognition engine ([Tesseract](https://github.com/tesseract-ocr/tesseract)); `false` when the document was already machine-readable
+
+Programs should make an effort to _not_ overwrite each other's `metadata`. If you're
+about to `PATCH` new metadata, don't write from scratch. `GET` the existing metadata
+first, modify that metadata in memory, and then `PATCH` the modified metadata.
+
++ Parameters
+    + documentSetId (required, number, `1`) ... The Document Set ID.
+    + id (required, number, `2`) ... The Document ID.
+
++ Model (application/json)
+
+        {
+            "id": 2,
+            "url": "http://example.org/foo/bar.txt",
+            "suppliedId": "foo/bar",
+            "title": "Foo Bar",
+            "text": "foo. bar. foo foo bar bar....",
+            "tokens": "foo bar foo foo bar bar ...",
+            "metadata": {}
+        }
+
+### Retrieve a Document [GET]
++ Response 200
+
+    [Document][]
+    
+### Update a Document's Metadata [PATCH]
+
++ Request (application/json)
+
+        {
+            "metadata": {
+                "foo": "bar"
+            }
+        }
+
++ Response 202
+
+## Documents Collection [/document-sets/{documentSetId}/documents?q={q}&tags={tags}&tagged={tagged}&tagOperation={tagOperation}&objects={objects}&documentIdsBitSetBase64={documentIdsBitSetBase64}&selectionId={selectionId}&refresh={refresh}&fields={fields}&sortByMetadataField={sortByMetadataField}&reverse={reverse}&offset={offset}&limit={limit}&stream={stream}]
+<a name="documents-collection"></a>Collection of Documents.
+
+Document collections can be rather large. By default, the `text`, `tokens` and `metadata` columns are omitted to save bandwidth.
+
+To stream the text of all documents, request `/document-sets/{documentSetId}/documents?stream=true&fields=id,text`.
+By default, streaming is false so you can only fetch one page of documents at a time. (That's because the client needs special logic to handle streaming.)
+Streaming responses have no `Content-Length`, and they can be as enormous as the document set.
+Use a streaming-JSON client library such as [Oboe.js](http://oboejs.com/), [Yajl](http://lloyd.github.io/yajl/), [py-yajl](https://github.com/rtyler/py-yajl/), or [yajl-ruby](https://github.com/brianmario/yajl-ruby). [Jackson](https://github.com/FasterXML/jackson) (for Java) is a streaming parser already.
+
++ Parameters
+    + documentSetId (required, number, `1`) ... The document set ID.
+    + q (optional, string, `bar`) ... An [ElasticSearch query string](http://www.elasticsearch.org/guide/en/elasticsearch/reference/current/query-dsl-query-string-query.html#query-string-syntax) to filter documents.
+    + tags (optional, string, `123,234,345`) ... A comma-separated list of Tag IDs. Return documents matching any tag in the list.
+    + tagOperation (optional, string, `any`) ... Only makes sense with `tags`. If `all`, return documents matching _all_ of the tags. If `none`, return documents matching _none_ of the tags. The default is `any`.
+    + tagged (optional, boolean, `true`) ... If set, return all documents that have at least one tag (`true`) or that have zero tags (`false`).
+    + objects (optional, string, `456,567,678`) ... A comma-separated list of StoreObject IDs. Return documents matching any StoreObject in the list.
+    + documentIdsBitSetBase64 (optional, string, `oA==`) ... For mass-selecting documents. See [Base64 BitSet](#base64-bit-set) for a description.
+    + selectionId (optional, string, `f121bfdf-2afa-4a54-9e83-ed94047cf093`) ... A UUID returned from a previous request. This is key for pagination. On first request, the server compiles a long list of documents and only returns the first few. `selectionId` ensures you're using the same server-side list.
+    + refresh (optional, boolean, `false`) ... Tell the server to skip its cache. Normally, when you request a page of documents, the server computes a long list of all matching documents, even if it only returns a few. For subsequent requests with the same parameters (but different page numbers), the server normally reuses the cached list. If your query relies on tags that have recently been added to and removed from documents, the cached list might not be the list you expect; set `refresh=true` to make sure it's current. If `selectionId` is set, `refresh` is ignored.
+    + fields (optional, string, `id`) ... Defaults to `id,pageNumber,suppliedId,title,url`. You may include `text`, `tokens` and/or `metadata`; those fields cost bandwidth, and if you aren't streaming they'll reduce the maximum page size. If you specify `id` on its own, the return value will be an Array of Document IDs (without pagination) instead of an Array of Document JSON objects.
+    + offset (optional, number, `0`) ... We're paginating; skip this many documents in the result list.
+    + limit (optional, number, `1000`) ... We're paginating; return at most this many documents.
+    + sortByMetadataField (optional, string, `Author`) ... Tell the server to order documents by the given metadata field name. By default, the server orders documents by title.
+    + reverse (optional, boolean, `true`) ... Reverse the order of returned documents. By default, the server orders documents alphabetically (by title or `sortByMetadataField`).
+    + stream (optional, boolean, `true`) ... When `true`, respond with `Transfer-Encoding: chunked` and allow returning an unlimited number of documents.
+
++ Model (application/json)
+
+        {
+            "selectionId": "f121bfdf-2afa-4a54-9e83-ed94047cf093",
+            "pagination": {
+                "offset": 0,
+                "limit": 1000,
+                "total": 2
+            },
+            "items": [
+                {
+                    "id": 2,
+                    "url": "http://example.org/foo/bar.txt",
+                    "suppliedId": "foo/bar",
+                    "title": "Foo Bar"
+                },
+                {
+                    "id": 3,
+                    "url": "http://example.org/bar/baz.txt",
+                    "suppliedId": "bar/baz",
+                    "title": "Bar Baz"
+                }
+            ]
+        }
+
+### List all Documents [GET]
+
++ Response 200
+
+    [Documents Collection][]
+
+# Group Store
+
+A **Store** is a set of data, private to your API token. You have one and only
+one Store object.
+
+Think of a Store as a JSON object that looks like this:
+
+        {
+          "state": { "o1": "v1", "o2": "v2" },
+          "objects": [
+            { "id": 1234, "json": {} }
+          ]
+        }
+
+All values are JSON Objects (not Arrays, Strings or Numbers). Overview assigns
+IDs.
+
+## State [/store/state]
+
+A singleton JSON object associated with your API key.
+
+Overview ignores this object completely. It is only here for your convenience.
+
++ Model (application/json)
+
+        {
+          "foo": "bar"
+        }
+
+### Retrieve your State [GET]
++ Response 200
+
+    [State][]
+
+### Edit your State [PUT]
+
+Editing your State will replace it in its entirety. There are no partial edits.
+
++ Request (application/json)
+
+        {
+          "foo": "bar"
+        }
+
++ Response 200
+
+    [State][]
+
+# Group StoreObjects
+
+A **StoreObject** is one of a collection you control.
+
+Think of a StoreObject like a tag. Each StoreObject has some metadata (e.g., a title), and it can be linked zero, one or many Documents.
+
+This description is intentionally vague. StoreObjects won't handle everybody's needs, but they
+should cover a broad set of applications, and they're reasonably efficient.
+
+## StoreObject [/store/objects/{id}]
+
++ Parameters
+    + id (required, number, `2`) ... The *StoreObject* ID.
+
++ Model (application/json)
+
+        {
+            "id": 2,
+            "indexedLong": 4,
+            "indexedString": null,
+            "json": { "foo": 4 }
+        }
+
+### Retrieve a StoreObject [GET]
+
++ Response 200
+
+    [StoreObject][]
+
+### Edit a StoreObject [PUT]
+You need only provide a JSON Object with a `json` property to update a StoreObject.
+
+If you plan on creating hundreds or more StoreObjects, you'll probably want a way to search
+them. You can pass an `indexedLong` and/or `indexedString` property to help.
+
++ Request (application/json)
+
+        {
+            "indexedLong": 4,
+            "indexedString": null,
+            "json": { "foo": 4 }
+        }
+
++ Response 200
+
+    [StoreObject][]
+
+### Delete a StoreObject [DELETE]
+
++ Response 204
+
+## StoreObjects Collection [/store/objects]
+Collection of all StoreObjects.
+
++ Model (application/json)
+
+        [
+          { "id": 1, "indexedLong": null, "indexedString": "foo", "json": { "foo": "bar" } },
+          { "id": 2, "indexedLong": 4, "indexedString": null, "json": {} }
+        ]
+
+### List all StoreObjects [GET]
+
++ Response 200
+
+    [StoreObjects Collection][]
+
+### Create a StoreObject [POST]
+You need only provide a JSON Object with a `json` property to create a StoreObject.
+
+If you plan on creating hundreds or more StoreObjects, you'll probably want a way to search
+them. You can pass an `indexedLong` and/or `indexedString` property to help.
+
++ Request (application/json)
+
+        {
+            "indexedLong": 4,
+            "json": { "foo": 4 }
+        }
+
++ Response 200
+
+    [StoreObject][]
+
+### Delete StoreObjects [DELETE]
+
+This method lets you delete several StoreObjects with a single request.
+
+You must pass the StoreObjects as an Array of IDs. Invalid IDs will be ignored.
+
++ Request (application/json)
+
+        [ 123, 234, 345 ]
+
++ Response 204
+
+# Group DocumentStoreObjects
+
+A **DocumentStoreObject** is a link between a *Document* and a *StoreObject*.
+
+For instance, if your StoreObjects are tags, then your DocumentStoreObjects will specify which documents have which tags.
+
+This description is intentionally vague. StoreObjects won't handle everybody's needs, but they
+should cover a broad set of applications, and they're reasonably efficient.
+
+Overview uses DocumentStoreObjects to search for documents. See the `objects` parameter in [List all Documents](#documents-collection).
+
+## DocumentStoreObject
+
+You can only create and destroy DocumentStoreObjects in bulk. These parameters are purely informative.
+
++ Parameters
+    + documentId (required, number, `1`) ... The Document being associated
+    + objectId (required, number, `2`) ... The StoreObject being associated
+
++ Model (application/json)
+
+        {
+            "documentId": 1,
+            "objectId": 2
+        }
+
+## DocumentStoreObjects Collection [/store/document-objects]
+Collection of all DocumentStoreObjects.
+
+To save bandwidth, this API uses an abridged syntax. Instead of JSON like `{ "documentId": 2, "objectId": 4 }`, each object looks like `[ 2, 4 ]`.
+
++ Model (application/json)
+
+        [
+            [ 1, 2 ],
+            [ 3, 4 ]
+        ]
+
+### Create DocumentStoreObjects [POST]
+
+If you send a DocumentStoreObject that already exists, it will be overwritten.
+
++ Request (application/json)
+
+        [
+            [ 1, 2 ],
+            [ 3, 4 ]
+        ]
+
++ Response 200
+
+    [DocumentStoreObjects Collection][]
+
+### Delete DocumentStoreObjects [DELETE]
+
+If you try and delete a DocumentStoreObject that does not exist, it will continue to not exist.
+
++ Request (application/json)
+
+        [
+            [ 1, 2 ],
+            [ 3, 4 ]
+        ]
+
++ Response 204

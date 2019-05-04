@@ -1,0 +1,64 @@
+#!/bin/bash
+
+# Usage: ./build overview-server.zip (also builds overview-server.tar.gz)
+#
+# (If invoked from your shell, it will run in a new Docker container.)
+#
+# Runs the "stage" command for all important targets; then zips them into the
+# specified file, rooted in a directory of the same name as the zipfile.
+#
+# For instance: ./build overview-server.zip will create overview-server.zip
+# with all its contents in an "overview-server/" directory. It will also create
+# overview-server.tar.gz.
+#
+# The resulting zipfiles are only for experts.
+
+. "$(dirname "$0")"/auto/ensure-in-docker.sh
+
+set -e
+set -x
+
+fail() {
+  echo "$@" >&2
+  echo >&2
+  echo "Usage: ./build overview-server.zip" >&2
+  exit 1
+}
+
+OUTPUT_ZIP="$1"
+[ -n "$OUTPUT_ZIP" ] || fail "You did not specify a zipfile or tarfile to write to"
+[ -n "$(echo "$OUTPUT_ZIP" | grep -E '^[a-zA-Z0-9_-]+\.zip$')" ] || fail "Your zipfile name must look like [a-zA-Z0-9_-].zip -- no directories allowed"
+OUTPUT_TGZ="${OUTPUT_ZIP%.*}.tar.gz"
+
+# Compile
+/app/sbt $SBT_OPTIONS -Dsbt.log.noformat=true '; db-evolution-applier/stage; worker/stage; web/stage'
+
+OVERVIEW_DIR=$(echo $OUTPUT_ZIP | cut -d. -f1)
+
+# Symlink the jars
+#
+# Symlink is faster than copy and doesn't take space. That's useful, because
+# we're presumably running in a temporary Docker container, so all that space
+# will need to be freed, too.
+#
+# We put jars in a "lib" directory for legacy reasons.
+OUTPUT_DIRECTORY="/tmp/$OVERVIEW_DIR"
+mkdir $OUTPUT_DIRECTORY
+mkdir $OUTPUT_DIRECTORY/lib
+
+for project in worker web db-evolution-applier; do
+  mkdir $OUTPUT_DIRECTORY/$project
+  ls /root/overview-build/$project/universal/stage/lib > $OUTPUT_DIRECTORY/$project/classpath.txt
+  ln -sf /root/overview-build/$project/universal/stage/lib/* $OUTPUT_DIRECTORY/lib/
+done
+
+# Copy the other useful files
+for file in README.md LICENSE; do
+  ln -sf /app/$file $OUTPUT_DIRECTORY/
+done
+
+# Now write the zipfile
+(cd /tmp && zip --quiet -r /app/$OUTPUT_ZIP $OVERVIEW_DIR)
+(cd /tmp && tar --dereference -czf /app/$OUTPUT_TGZ $OVERVIEW_DIR)
+# We'll leave those symlinks in /tmp. When the Docker container is removed,
+# they'll disappear.
